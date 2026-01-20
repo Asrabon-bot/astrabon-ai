@@ -1,0 +1,8 @@
+numpy
+faiss-cpu
+openai
+streamlit
+pillow
+requests
+python-dotenv
+beautifulsoup4
