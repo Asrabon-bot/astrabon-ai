@@ -20,6 +20,7 @@ import time
 import base64
 from dotenv import load_dotenv
 from bs4 import BeautifulSoup
+from pathlib import Path
 
 load_dotenv()
 
@@ -39,28 +40,46 @@ class ProductRetriever:
         self.image_cache = {}  # Cache scraped images
         self.load_embeddings(embeddings_dir)
 
+    
     def load_embeddings(self, embeddings_dir: str):
-        """Load embeddings and FAISS index"""
-        index_path = os.path.join(embeddings_dir, "products.index")
-        self.index = faiss.read_index(index_path)
-        
-        products_path = os.path.join(embeddings_dir, "products.json")
-        with open(products_path, 'r', encoding='utf-8') as f:
+        """Load embeddings and FAISS index (OS-agnostic & safe)"""
+
+        embeddings_dir = Path(embeddings_dir).expanduser().resolve()
+
+        index_path = embeddings_dir / "products.index"
+        products_path = embeddings_dir / "products.json"
+        embeddings_path = embeddings_dir / "embeddings.npy"
+
+        # ---- Validation (fail fast) ----
+        if not index_path.exists():
+            raise FileNotFoundError(f"❌ FAISS index not found: {index_path}")
+        if not products_path.exists():
+            raise FileNotFoundError(f"❌ Products JSON not found: {products_path}")
+        if not embeddings_path.exists():
+            raise FileNotFoundError(f"❌ Embeddings file not found: {embeddings_path}")
+
+        # ---- Load FAISS index ----
+        self.index = faiss.read_index(str(index_path))
+
+        # ---- Load metadata ----
+        with open(products_path, "r", encoding="utf-8") as f:
             self.products = json.load(f)
-        
-        embeddings_path = os.path.join(embeddings_dir, "embeddings.npy")
+
+        # ---- Load embeddings ----
         self.embeddings = np.load(embeddings_path)
         self.embedding_dimension = self.embeddings.shape[1]
-        
-        # Verify normalization
+
+        # ---- Verify normalization ----
         first_norm = np.linalg.norm(self.embeddings[0])
         is_normalized = 0.99 <= first_norm <= 1.01
-        
-        print(f"✅ Loaded {len(self.products)} products with {self.embedding_dimension}D embeddings")
-        print(f"📊 Embedding norm: {first_norm:.4f} (normalized: {is_normalized})")
-        
+
+        print(f"✅ Loaded {len(self.products)} products")
+        print(f"📐 Embedding dimension: {self.embedding_dimension}")
+        print(f"📊 First vector norm: {first_norm:.4f} (normalized={is_normalized})")
+
         if not is_normalized:
-            print("⚠️ WARNING: Embeddings not normalized! Regenerate with embedding script.")
+            print("⚠️ WARNING: Embeddings are not L2-normalized. "
+                "FAISS cosine similarity may behave incorrectly.")
 
     def get_embedding(self, text: str) -> np.ndarray:
         """Get embedding from OpenAI"""
@@ -500,11 +519,14 @@ def main():
         else:
             api_key = st.text_input("OpenAI API Key:", type="password")
         
+        BASE_DIR = Path(__file__).resolve().parent
+        DEFAULT_EMBEDDINGS_DIR = BASE_DIR / "product_embeddings"
+
         embeddings_dir = st.text_input(
             "Embeddings Directory:",
-            value=r"C:\Users\Aafreen\OneDrive\Desktop\askari\data_scrapping\data_scrapping\product_embeddings"
+            value=str(DEFAULT_EMBEDDINGS_DIR)
         )
-        
+
         top_k = st.slider("Products to show:", 1, 10, 5)
         
         if 'retriever' in st.session_state:
