@@ -346,94 +346,74 @@ Your response (as Dhon):"""
             'time': total_time
         }
 
+from playwright.sync_api import sync_playwright
+
 def scrape_product_image(product_url: str) -> tuple[Optional[str], Optional[str]]:
-    """Scrape product image and product code from Astrabon using Selenium"""
+    """Scrape product image and product code from Astrabon using Playwright"""
     img_url = None
     product_code = None
     
     try:
-        # Setup headless Chrome
-        chrome_options = Options()
-        chrome_options.add_argument('--headless')
-        chrome_options.add_argument('--no-sandbox')
-        chrome_options.add_argument('--disable-dev-shm-usage')
-        chrome_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
-        
-        driver = webdriver.Chrome(options=chrome_options)
-        driver.get(product_url)
-        
-        # Wait for the page to load (wait for product code element)
-        try:
-            WebDriverWait(driver, 10).until(
-                EC.presence_of_element_located((By.CLASS_NAME, "product-code"))
-            )
-        except:
-            print(f"Timeout waiting for product-code element")
-        
-        # Get the page source after JavaScript has rendered
-        soup = BeautifulSoup(driver.page_source, 'html.parser')
-        
-        # Scrape product code from h6 with class "product-code"
-        code_elem = soup.find('h6', class_='product-code')
-        print(f"Found h6 element: {code_elem}")
-        
-        if code_elem:
-            product_code = code_elem.get_text(strip=True)
-            print(f"Extracted product code: {product_code}")
-        
-        # Scrape image
-        # Try og:image first
-        og_image = soup.find('meta', property='og:image')
-        if og_image and og_image.get('content'):
-            img_url = og_image['content']
-        
-        if not img_url:
-            # Try common image selectors
-            selectors = [
-                'img.product-image',
-                'img[itemprop="image"]',
-                'div.product-gallery img',
-                '.product-img img',
-                'img[alt*="product"]',
-                'img[src*="products"]',
-                'img[src*="cdn"]'
-            ]
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
+            page.goto(product_url, wait_until='networkidle', timeout=15000)
             
-            for selector in selectors:
-                img = soup.select_one(selector)
-                if img and img.get('src'):
-                    src = img['src']
-                    if src.startswith('//'):
-                        img_url = 'https:' + src
-                    elif src.startswith('/'):
-                        img_url = 'https://www.astrabonmaldives.com' + src
-                    else:
-                        img_url = src
-                    break
-        
-        # Fallback: find any reasonable image
-        if not img_url:
-            for img in soup.find_all('img'):
-                src = img.get('src', '')
-                if src and any(x in src.lower() for x in ['product', 'item', 'cdn', 'upload', 'image', 'astrabon']):
-                    if src.startswith('//'):
-                        img_url = 'https:' + src
-                    elif src.startswith('/'):
-                        img_url = 'https://www.astrabonmaldives.com' + src
-                    else:
-                        img_url = src
-                    break
-        
-        print(f"Final - Image URL: {img_url}, Product Code: {product_code}\n")
-        
-        driver.quit()
+            # Get the rendered HTML
+            content = page.content()
+            soup = BeautifulSoup(content, 'html.parser')
+            
+            # Scrape product code
+            code_elem = soup.find('h6', class_='product-code')
+            if code_elem:
+                product_code = code_elem.get_text(strip=True)
+                print(f"Extracted product code: {product_code}")
+            
+            # Scrape image
+            og_image = soup.find('meta', property='og:image')
+            if og_image and og_image.get('content'):
+                img_url = og_image['content']
+            
+            if not img_url:
+                selectors = [
+                    'img.product-image',
+                    'img[itemprop="image"]',
+                    'div.product-gallery img',
+                    '.product-img img',
+                    'img[alt*="product"]',
+                    'img[src*="products"]',
+                    'img[src*="cdn"]'
+                ]
+                
+                for selector in selectors:
+                    img = soup.select_one(selector)
+                    if img and img.get('src'):
+                        src = img['src']
+                        if src.startswith('//'):
+                            img_url = 'https:' + src
+                        elif src.startswith('/'):
+                            img_url = 'https://www.astrabonmaldives.com' + src
+                        else:
+                            img_url = src
+                        break
+            
+            if not img_url:
+                for img in soup.find_all('img'):
+                    src = img.get('src', '')
+                    if src and any(x in src.lower() for x in ['product', 'item', 'cdn', 'upload', 'image', 'astrabon']):
+                        if src.startswith('//'):
+                            img_url = 'https:' + src
+                        elif src.startswith('/'):
+                            img_url = 'https://www.astrabonmaldives.com' + src
+                        else:
+                            img_url = src
+                        break
+            
+            print(f"Final - Image URL: {img_url}, Product Code: {product_code}\n")
+            browser.close()
                         
     except Exception as e:
         print(f"Error scraping: {e}")
-        try:
-            driver.quit()
-        except:
-            pass
     
     return img_url, product_code
 
