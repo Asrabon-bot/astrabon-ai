@@ -21,6 +21,11 @@ import base64
 from dotenv import load_dotenv
 from bs4 import BeautifulSoup
 from pathlib import Path
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.chrome.options import Options
 
 load_dotenv()
 
@@ -341,21 +346,48 @@ Your response (as Dhon):"""
             'time': total_time
         }
 
-
-def scrape_product_image(product_url: str) -> Optional[str]:
-    """Scrape product image from Astrabon"""
+def scrape_product_image(product_url: str) -> tuple[Optional[str], Optional[str]]:
+    """Scrape product image and product code from Astrabon using Selenium"""
+    img_url = None
+    product_code = None
+    
     try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-        response = requests.get(product_url, headers=headers, timeout=10)
+        # Setup headless Chrome
+        chrome_options = Options()
+        chrome_options.add_argument('--headless')
+        chrome_options.add_argument('--no-sandbox')
+        chrome_options.add_argument('--disable-dev-shm-usage')
+        chrome_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
         
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.content, 'html.parser')
-            
-            # Try og:image first (most reliable)
-            og_image = soup.find('meta', property='og:image')
-            if og_image and og_image.get('content'):
-                return og_image['content']
-            
+        driver = webdriver.Chrome(options=chrome_options)
+        driver.get(product_url)
+        
+        # Wait for the page to load (wait for product code element)
+        try:
+            WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.CLASS_NAME, "product-code"))
+            )
+        except:
+            print(f"Timeout waiting for product-code element")
+        
+        # Get the page source after JavaScript has rendered
+        soup = BeautifulSoup(driver.page_source, 'html.parser')
+        
+        # Scrape product code from h6 with class "product-code"
+        code_elem = soup.find('h6', class_='product-code')
+        print(f"Found h6 element: {code_elem}")
+        
+        if code_elem:
+            product_code = code_elem.get_text(strip=True)
+            print(f"Extracted product code: {product_code}")
+        
+        # Scrape image
+        # Try og:image first
+        og_image = soup.find('meta', property='og:image')
+        if og_image and og_image.get('content'):
+            img_url = og_image['content']
+        
+        if not img_url:
             # Try common image selectors
             selectors = [
                 'img.product-image',
@@ -372,24 +404,38 @@ def scrape_product_image(product_url: str) -> Optional[str]:
                 if img and img.get('src'):
                     src = img['src']
                     if src.startswith('//'):
-                        return 'https:' + src
+                        img_url = 'https:' + src
                     elif src.startswith('/'):
-                        return 'https://www.astrabonmaldives.com' + src
-                    return src
-            
-            # Fallback: find any reasonable image
+                        img_url = 'https://www.astrabonmaldives.com' + src
+                    else:
+                        img_url = src
+                    break
+        
+        # Fallback: find any reasonable image
+        if not img_url:
             for img in soup.find_all('img'):
                 src = img.get('src', '')
-                if src and any(x in src.lower() for x in ['product', 'item', 'cdn', 'upload', 'image']):
+                if src and any(x in src.lower() for x in ['product', 'item', 'cdn', 'upload', 'image', 'astrabon']):
                     if src.startswith('//'):
-                        return 'https:' + src
+                        img_url = 'https:' + src
                     elif src.startswith('/'):
-                        return 'https://www.astrabonmaldives.com' + src
-                    return src
+                        img_url = 'https://www.astrabonmaldives.com' + src
+                    else:
+                        img_url = src
+                    break
+        
+        print(f"Final - Image URL: {img_url}, Product Code: {product_code}\n")
+        
+        driver.quit()
+                        
     except Exception as e:
-        print(f"Error scraping image: {e}")
+        print(f"Error scraping: {e}")
+        try:
+            driver.quit()
+        except:
+            pass
     
-    return None
+    return img_url, product_code
 
 
 def load_image_from_url(url: str) -> Optional[Image.Image]:
@@ -422,9 +468,13 @@ def display_product(product: Dict, index: int, retriever: ProductRetriever):
             # If no image, scrape it
             if not img_url or img_url == product_url:
                 if product_url:
-                    img_url = scrape_product_image(product_url)
-                    if img_url:
+                    scraped_img_url, scraped_code = scrape_product_image(product_url)
+                    if scraped_img_url:
+                        img_url = scraped_img_url
                         retriever.image_cache[product_id] = img_url
+                    # Store scraped product code if not already present
+                    if scraped_code and not product.get('product_code'):
+                        product['product_code'] = scraped_code
         
         # Load and display image
         img = None
@@ -454,9 +504,17 @@ def display_product(product: Dict, index: int, retriever: ProductRetriever):
         else:
             badge_color = "#9E9E9E"
         
+        # Get product code dynamically
+        product_code = product.get('product_code', '') or product.get('sku', '') or product.get('code', '')
+        
+        # Build title with product code
+        title_with_code = f"{index}. {product.get('title', 'N/A')}"
+        if product_code:
+            title_with_code += f'<br><span style="background: #1E88E5; color: white; padding: 3px 10px; border-radius: 4px; font-size: 0.75em; font-weight: 600; margin-top: 5px; display: inline-block;">{product_code}</span>'
+        
         st.markdown(f"""
         <div style="padding: 10px;">
-            <h4 style="color: #1E88E5; margin-bottom: 8px;">{index}. {product.get('title', 'N/A')}</h4>
+            <h4 style="color: #1E88E5; margin-bottom: 8px;">{title_with_code}</h4>
             <p style="margin: 3px 0; font-size: 0.9em;"><b>Type:</b> {product.get('product_type', 'N/A')}</p>
             <p style="margin: 3px 0; font-size: 0.9em;"><b>Category:</b> {product.get('category', 'N/A')}</p>
             <p style="margin: 3px 0; font-size: 0.9em;"><b>Brand:</b> {product.get('brand', 'N/A')}</p>
@@ -471,7 +529,6 @@ def display_product(product: Dict, index: int, retriever: ProductRetriever):
             </span>
         </div>
         """, unsafe_allow_html=True)
-
 
 def main():
     st.set_page_config(page_title="Dhon - Astrabon Assistant", page_icon="🛍️", layout="wide")
